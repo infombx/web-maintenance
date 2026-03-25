@@ -44,6 +44,7 @@ export function WebsiteActions({ websiteId, hasScrape }: WebsiteActionsProps) {
 
   async function handleRunTests() {
     setTesting(true);
+    toast.info("Running tests — this takes 3–5 minutes. Please keep this tab open.");
     try {
       const res = await fetch("/api/test-runs", {
         method: "POST",
@@ -55,10 +56,10 @@ export function WebsiteActions({ websiteId, hasScrape }: WebsiteActionsProps) {
         toast.error(data.error ?? "Failed to start test run");
         return;
       }
-      toast.success("Test run started");
+      toast.success("Tests complete!");
       router.push(`/websites/${websiteId}/run/${data.testRunId}`);
     } catch {
-      toast.error("Failed to start test run");
+      toast.error("Test run failed or timed out");
     } finally {
       setTesting(false);
     }
@@ -98,7 +99,7 @@ export function WebsiteActions({ websiteId, hasScrape }: WebsiteActionsProps) {
         ) : (
           <Play className="h-4 w-4 mr-2" />
         )}
-        Run Tests
+        {testing ? "Running… (3–5 min)" : "Run Tests"}
       </Button>
 
       <Button
