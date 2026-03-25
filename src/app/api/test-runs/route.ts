@@ -98,8 +98,9 @@ export async function POST(req: NextRequest) {
   let totalTests = 0, passedTests = 0, failedTests = 0;
 
   try {
-    for (const pageUrl of pageUrls) {
-      // HTTP checks (device-independent) — run once
+    // Run all pages in parallel
+    await Promise.all(pageUrls.map(async (pageUrl) => {
+      // HTTP checks (device-independent) — run once per page
       const { pageLoad, html, ttfb } = await httpCheck(pageUrl);
       const linksResult = await checkLinks(html, pageUrl);
       const perfResult = perfCheck(ttfb);
@@ -148,7 +149,7 @@ export async function POST(req: NextRequest) {
           else if (result.status === "fail") failedTests++;
         }
       }));
-    }
+    }));
 
     await db.update(testRuns).set({ totalTests, passedTests, failedTests }).where(eq(testRuns.id, testRunId));
 
