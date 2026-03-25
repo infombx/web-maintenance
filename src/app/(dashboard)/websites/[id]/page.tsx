@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { TestRunCard } from "@/components/test-run-card";
 import { WebsiteActions } from "@/components/website-actions";
+import { ScrapeStatusPoller } from "@/components/scrape-status-poller";
 
 export default async function WebsiteDetailPage({
   params,
@@ -99,6 +100,10 @@ export default async function WebsiteDetailPage({
           </div>
         ) : (
           <p className="text-sm text-zinc-400">No baseline captured yet.</p>
+        )}
+
+        {latestScrape && (latestScrape.status === "pending" || latestScrape.status === "running") && (
+          <ScrapeStatusPoller scrapeId={latestScrape.id} />
         )}
 
         <WebsiteActions
