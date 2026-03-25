@@ -3,7 +3,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { websites, scrapes } from "@/lib/db/schema";
 import { eq, and } from "drizzle-orm";
-import { inngest } from "@/lib/inngest/client";
+import { takeScreenshot } from "@/lib/cloudflare/browser";
+import { uploadScreenshot } from "@/lib/blob/storage";
 
 export async function POST(req: NextRequest) {
   const { userId } = await auth();
@@ -19,13 +20,26 @@ export async function POST(req: NextRequest) {
 
   const [scrape] = await db
     .insert(scrapes)
-    .values({ websiteId, type: "reference", status: "pending" })
+    .values({ websiteId, type: "reference", status: "running" })
     .returning();
 
-  await inngest.send({
-    name: "website/scrape.requested",
-    data: { scrapeId: scrape.id, websiteId, url: website.url },
-  });
+  try {
+    const safePath = website.url.replace(/[^a-zA-Z0-9]/g, "_").substring(0, 100);
+    const screenshot = await takeScreenshot(website.url);
+    const blobUrl = await uploadScreenshot(screenshot, `reference/${scrape.id}/${safePath}.png`);
 
-  return NextResponse.json({ scrapeId: scrape.id }, { status: 201 });
+    await db.update(scrapes).set({
+      status: "completed",
+      pagesDiscovered: 1,
+      screenshotUrls: { [website.url]: blobUrl },
+      htmlSnapshots: {},
+      completedAt: new Date(),
+    }).where(eq(scrapes.id, scrape.id));
+
+    return NextResponse.json({ scrapeId: scrape.id, status: "completed" }, { status: 201 });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    await db.update(scrapes).set({ status: "failed", errorMessage: msg }).where(eq(scrapes.id, scrape.id));
+    return NextResponse.json({ error: msg }, { status: 500 });
+  }
 }
