@@ -13,6 +13,20 @@ import { DEVICES, type DeviceKey } from "@/lib/playwright/devices";
 
 export const maxDuration = 60;
 
+/** Run tasks with max concurrency */
+async function pLimit<T>(tasks: (() => Promise<T>)[], limit: number): Promise<T[]> {
+  const results: T[] = [];
+  let i = 0;
+  async function run(): Promise<void> {
+    while (i < tasks.length) {
+      const idx = i++;
+      results[idx] = await tasks[idx]();
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, tasks.length) }, run));
+  return results;
+}
+
 // Lightweight page-load check via fetch
 async function httpCheck(url: string) {
   try {
@@ -93,37 +107,55 @@ export async function POST(req: NextRequest) {
 
   const testRunId = testRun.id;
   const pageUrls = Object.keys(referenceScrape.screenshotUrls as Record<string, string>);
-  const devices: DeviceKey[] = ["desktop", "laptop", "tablet", "mobile"];
+  // Visual screenshots for desktop + mobile only to stay within time/rate limits
+  const visualDevices: DeviceKey[] = ["desktop", "mobile"];
+  const allDevices: DeviceKey[] = ["desktop", "laptop", "tablet", "mobile"];
 
   let totalTests = 0, passedTests = 0, failedTests = 0;
 
   try {
-    // Run all pages in parallel
-    await Promise.all(pageUrls.map(async (pageUrl) => {
-      // HTTP checks (device-independent) — run once per page
+    // HTTP checks for all pages in parallel (fast, no browser)
+    const pageChecks = await Promise.all(pageUrls.map(async (pageUrl) => {
       const { pageLoad, html, ttfb } = await httpCheck(pageUrl);
       const linksResult = await checkLinks(html, pageUrl);
       const perfResult = perfCheck(ttfb);
+      return { pageUrl, pageLoad, linksResult, perfResult };
+    }));
 
-      // Per-device: screenshot + visual comparison via Cloudflare
-      await Promise.all(devices.map(async (deviceKey) => {
+    // Visual screenshots: desktop + mobile, max 3 concurrent Cloudflare requests
+    const screenshotTasks = pageUrls.flatMap((pageUrl) =>
+      visualDevices.map((deviceKey) => async () => {
         const device = DEVICES[deviceKey];
         const safePath = pageUrl.replace(/[^a-zA-Z0-9]/g, "_").substring(0, 80);
         const referenceScreenshotUrl = (referenceScrape.screenshotUrls as Record<string, string>)[pageUrl] ?? null;
-
         let screenshotUrl: string | undefined;
         let visualResult: { status: "pass" | "fail" | "warning"; details: Record<string, unknown> } = {
-          status: "warning",
-          details: { message: "Screenshot unavailable" },
+          status: "warning", details: { message: "Screenshot unavailable" },
         };
-
         try {
-          const screenshotBuf = await takeScreenshot(pageUrl, { width: device.width, height: device.height });
-          screenshotUrl = await uploadScreenshot(screenshotBuf, `test-runs/${testRunId}/${deviceKey}/${safePath}.png`);
-          visualResult = await checkVisual(screenshotBuf, referenceScreenshotUrl);
+          const buf = await takeScreenshot(pageUrl, { width: device.width, height: device.height });
+          screenshotUrl = await uploadScreenshot(buf, `test-runs/${testRunId}/${deviceKey}/${safePath}.png`);
+          visualResult = await checkVisual(buf, referenceScreenshotUrl);
         } catch (err) {
           visualResult = { status: "warning", details: { message: `Screenshot failed: ${String(err)}` } };
         }
+        return { pageUrl, deviceKey, screenshotUrl, visualResult, referenceScreenshotUrl };
+      })
+    );
+    const screenshotResults = await pLimit(screenshotTasks, 3);
+
+    // Build a lookup: pageUrl+device → screenshot data
+    const screenshotMap = new Map(
+      screenshotResults.map(r => [`${r.pageUrl}::${r.deviceKey}`, r])
+    );
+
+    // Insert all test results
+    for (const { pageUrl, pageLoad, linksResult, perfResult } of pageChecks) {
+      for (const deviceKey of allDevices) {
+        const screenshotData = screenshotMap.get(`${pageUrl}::${deviceKey}`);
+        const screenshotUrl = screenshotData?.screenshotUrl;
+        const referenceScreenshotUrl = (referenceScrape.screenshotUrls as Record<string, string>)[pageUrl] ?? null;
+        const visualResult = screenshotData?.visualResult ?? { status: "warning" as const, details: { message: "Visual check skipped for this device" } };
 
         const checks = [
           { checkType: "page_load" as const, result: pageLoad },
@@ -148,8 +180,8 @@ export async function POST(req: NextRequest) {
           if (result.status === "pass") passedTests++;
           else if (result.status === "fail") failedTests++;
         }
-      }));
-    }));
+      }
+    }
 
     await db.update(testRuns).set({ totalTests, passedTests, failedTests }).where(eq(testRuns.id, testRunId));
 

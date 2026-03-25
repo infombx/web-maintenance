@@ -15,6 +15,20 @@ function extractUrls(text: string | null, fallback: string): string[] {
   return found.length > 0 ? [...new Set(found)] : [fallback];
 }
 
+/** Run an array of async tasks with max concurrency */
+async function pLimit<T>(tasks: (() => Promise<T>)[], limit: number): Promise<T[]> {
+  const results: T[] = [];
+  let i = 0;
+  async function run(): Promise<void> {
+    while (i < tasks.length) {
+      const idx = i++;
+      results[idx] = await tasks[idx]();
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, tasks.length) }, run));
+  return results;
+}
+
 export async function POST(req: NextRequest) {
   const { userId } = await auth();
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -37,9 +51,9 @@ export async function POST(req: NextRequest) {
   try {
     const screenshotUrls: Record<string, string> = {};
 
-    // Screenshot all pages in parallel
-    await Promise.all(
-      urls.map(async (url) => {
+    // Screenshot pages with max 3 concurrent requests to avoid Cloudflare rate limits
+    await pLimit(
+      urls.map((url) => async () => {
         try {
           const safePath = url.replace(/[^a-zA-Z0-9]/g, "_").substring(0, 100);
           const screenshot = await takeScreenshot(url);
@@ -47,7 +61,8 @@ export async function POST(req: NextRequest) {
         } catch (err) {
           console.error(`Screenshot failed for ${url}:`, err);
         }
-      })
+      }),
+      3
     );
 
     if (Object.keys(screenshotUrls).length === 0) {
