@@ -40,20 +40,20 @@ async function checkLinks(html: string, baseUrl: string) {
       .filter((h, i, a) => a.indexOf(h) === i)
       .slice(0, 10); // max 10 links
 
-    const broken: string[] = [];
+    const broken: Array<{ url: string; status: number }> = [];
     await Promise.all(internal.map(async (href) => {
       try {
         const r = await fetch(href, { method: "HEAD", signal: AbortSignal.timeout(5000), redirect: "follow" });
-        if (r.status >= 400) broken.push(`${href} (${r.status})`);
+        if (r.status >= 400) broken.push({ url: href, status: r.status });
       } catch {
-        broken.push(`${href} (unreachable)`);
+        broken.push({ url: href, status: 0 });
       }
     }));
 
     if (broken.length > 0) {
       return { status: "fail" as const, details: { brokenLinks: broken, message: `${broken.length} broken link(s) found` } };
     }
-    return { status: "pass" as const, details: { checkedLinks: internal.length, message: `${internal.length} links OK` } };
+    return { status: "pass" as const, details: { message: `${internal.length} links OK` } };
   } catch {
     return { status: "warning" as const, details: { message: "Link check failed" } };
   }
@@ -138,7 +138,8 @@ export async function POST(req: NextRequest) {
             pageUrl,
             status: result.status,
             checkType,
-            details: result.details,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            details: result.details as any,
             screenshotUrl,
             referenceScreenshotUrl: referenceScreenshotUrl ?? undefined,
           });
